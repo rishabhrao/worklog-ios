@@ -46,6 +46,10 @@ struct ClipScreenView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WorklogSpacing.lg) {
+                // Inside the scroll view, where the width proposal is the
+                // screen's. A `safeAreaInset` proposes an unbounded width to
+                // its content, which made the chips lay out on one endless
+                // line and clip at the edge.
                 RangeLoaderView(viewModel: viewModel)
 
                 content
