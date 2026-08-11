@@ -89,7 +89,7 @@ final class AppleSpeechPreviewTranscriber: PreviewTranscriber {
 
     func availability() async -> PreviewTranscriberAvailability {
         guard SpeechTranscriber.isAvailable else {
-            return .unavailable("This Mac can't run the on-device transcriber.")
+            return .unavailable("This device can't run the on-device transcriber.")
         }
         guard let locale = await Self.resolveLocale() else {
             return .unavailable("No supported preview language for this system.")

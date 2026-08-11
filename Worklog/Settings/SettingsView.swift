@@ -249,7 +249,7 @@ struct SettingsView: View {
         SettingsSection(title: "Haptics & Sound", systemImage: "hand.tap") {
             VStack(alignment: .leading, spacing: WorklogSpacing.md) {
                 WorklogToggle(
-                    label: "Trackpad haptics",
+                    label: "Haptics",
                     isOn: Binding(
                         get: { viewModel.hapticsEnabled },
                         set: { viewModel.setHapticsEnabled($0) }
@@ -269,7 +269,7 @@ struct SettingsView: View {
                         set: { viewModel.setDictationSoundsEnabled($0) }
                     )
                 )
-                Text("Three short tones - rising when a dictation starts, falling when it ends, and lower still when one is cancelled. Dictation happens with this window out of sight, so sound is the only feedback that reliably reaches you. Worth turning off if you dictate on speakers, since the microphone is recording and will hear them too.")
+                Text("Three short tones - rising when a dictation starts, falling when it ends, and lower still when one is cancelled. Useful when you are dictating from the keyboard in another app and not looking at Worklog. Worth turning off if you dictate on speakers, since the microphone will hear them too.")
                     .font(WorklogFont.caption)
                     .foregroundStyle(Color.worklogTextTertiary)
                     .fixedSize(horizontal: false, vertical: true)

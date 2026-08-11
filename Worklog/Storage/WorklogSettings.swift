@@ -294,7 +294,7 @@ struct WorklogSettings: Codable {
     /// Off by default: it removes something the transcriber genuinely heard.
     var dictationRemoveSoundLabels: Bool?
 
-    /// Trackpad haptics on presses, selections, toggles and slider detents.
+    /// Haptics on presses, selections, toggles and slider detents.
     /// On by default - the feedback is the point, and macOS already gives
     /// people a system-wide switch for turning haptics off entirely, which
     /// this one sits underneath rather than duplicating.
