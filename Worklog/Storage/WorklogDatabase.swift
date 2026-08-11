@@ -643,6 +643,25 @@ final class WorklogDatabase {
 
     // MARK: - App state (key-value)
 
+    // MARK: - Container-path repair
+
+    /// Every non-null value in a path column. Used only by
+    /// `ContainerPathMigration`, which runs once at launch.
+    func allPaths(table: String, column: String) -> [String] {
+        var paths: [String] = []
+        // The table and column names are compile-time constants from a fixed
+        // list in the migration, never user input - but they still cannot be
+        // bound as parameters, so the list is the guarantee.
+        try? sqlite.query("SELECT \(column) FROM \(table) WHERE \(column) IS NOT NULL") { row in
+            if let value = row.string(0) { paths.append(value) }
+        }
+        return paths
+    }
+
+    func rewritePath(table: String, column: String, from oldPath: String, to newPath: String) {
+        try? sqlite.execute("UPDATE \(table) SET \(column) = ? WHERE \(column) = ?", [newPath, oldPath])
+    }
+
     func appStateValue(forKey key: String) -> String? {
         var value: String?
         try? sqlite.query("SELECT value FROM app_state WHERE key = ?", [key]) { row in

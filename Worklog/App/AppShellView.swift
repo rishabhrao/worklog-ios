@@ -70,6 +70,7 @@ struct AppShellView: View {
             clipViewModel.onClipCreated = { clipID in
                 openClip(clipID)
             }
+            openInitialDetailIfRequested()
         }
         .onReceive(AppNavigationRequests.publisher) { route in
             AppNavigationRequests.consume()
@@ -124,6 +125,24 @@ struct AppShellView: View {
         guard let raw = ProcessInfo.processInfo.environment["WORKLOG_INITIAL_TAB"],
               let route = AppShellRoute(rawValue: raw) else { return .clip }
         return route
+    }
+
+    /// Pushes a detail screen on launch, so a screenshot run can reach one
+    /// without driving the UI. Indexes into the newest-first list rather than
+    /// naming an id, because ids are generated.
+    private func openInitialDetailIfRequested() {
+        let env = ProcessInfo.processInfo.environment
+        if let raw = env["WORKLOG_OPEN_CLIP"], let index = Int(raw) {
+            libraryViewModel.reload()
+            guard libraryViewModel.entries.indices.contains(index) else { return }
+            openClip(libraryViewModel.entries[index].id)
+        }
+        if let raw = env["WORKLOG_OPEN_DICTATION"], let index = Int(raw) {
+            dictationsViewModel.reload()
+            guard dictationsViewModel.entries.indices.contains(index) else { return }
+            selection = .dictations
+            dictationsPath.append(dictationsViewModel.entries[index].id)
+        }
     }
 
     private func openClip(_ clipID: String) {

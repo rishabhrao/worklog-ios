@@ -68,7 +68,7 @@ struct DictationDetailView: View {
                         iconButton(systemName: "square.and.arrow.up", label: "Share dictation audio") {
                             viewModel.shareAudio(for: entry)
                         }
-                        iconButton(systemName: "square.and.arrow.up", label: "Share dictation files") {
+                        iconButton(systemName: "shippingbox", label: "Share every file for this dictation") {
                             viewModel.revealFileInFinder(atPath: entry.dictation.path)
                         }
                     }
@@ -184,11 +184,6 @@ struct DictationDetailView: View {
                     // same set the Android dictation screen offers.
                     iconButton(systemName: "square.and.arrow.up", label: "Share text") {
                         viewModel.shareText(for: entry)
-                    }
-                }
-                if let textPath = entry.dictation.textPath {
-                    iconButton(systemName: "square.and.arrow.up", label: "Share text") {
-                        viewModel.revealFileInFinder(atPath: textPath)
                     }
                 }
                 iconButton(systemName: "arrow.clockwise", label: "Retry transcription") {

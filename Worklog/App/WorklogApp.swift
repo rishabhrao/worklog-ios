@@ -75,6 +75,10 @@ final class AppEnvironment {
         // folders that may never have been created on a fresh install.
         try? WorklogPaths.ensureFullLayoutExists()
         FileLayoutMigration.run()
+        // Before anything reads a stored path: the container can move
+        // between launches on iOS, which would otherwise make every
+        // recording look lost.
+        ContainerPathMigration.run()
         recordingController = RecordingController()
         dictationController = DictationController(recordingController: recordingController)
         StartupReconciliation.run()

@@ -145,11 +145,11 @@ struct LibraryDetailView: View {
                     // Exports the whole clip - audio, transcript,
                     // translations, summaries - as a portable .worklog.zip
                     // and hands it to the native share picker.
-                    iconButton(systemName: "square.and.arrow.up", label: "Export & share clip") {
+                    iconButton(systemName: "shippingbox", label: "Export as a Worklog archive") {
                         viewModel.exportAndShareArchive(for: entry)
                     }
-                    iconButton(systemName: "square.and.arrow.up", label: "Share clip files") {
-                        viewModel.revealFileInFinder(atPath: entry.clip.path)
+                    iconButton(systemName: "square.and.arrow.up", label: "Share the audio") {
+                        viewModel.shareClipAudio(for: entry)
                     }
                 }
             }
@@ -292,7 +292,6 @@ struct LibraryDetailView: View {
             copyConfirmationID: copyID,
             onCopyPath: entry.transcript?.path.map { path in { viewModel.copyPath(path, confirmationID: copyID) } },
             onShare: entry.transcript?.path.map { path in { viewModel.shareFile(atPath: path) } },
-            onReveal: entry.transcript?.path.map { path in { viewModel.revealFileInFinder(atPath: path) } },
             onRetry: {
                 confirmRetry(
                     label: "transcription",
@@ -401,7 +400,6 @@ struct LibraryDetailView: View {
             copyConfirmationID: copyID,
             onCopyPath: translation.path.map { path in { viewModel.copyPath(path, confirmationID: copyID) } },
             onShare: translation.path.map { path in { viewModel.shareFile(atPath: path) } },
-            onReveal: translation.path.map { path in { viewModel.revealFileInFinder(atPath: path) } },
             onRetry: {
                 confirmRetry(
                     label: "\(translation.language.capitalized) translation",
@@ -474,7 +472,6 @@ struct LibraryDetailView: View {
             copyConfirmationID: copyID,
             onCopyPath: summary.path.map { path in { viewModel.copyPath(path, confirmationID: copyID) } },
             onShare: summary.path.map { path in { viewModel.shareFile(atPath: path) } },
-            onReveal: summary.path.map { path in { viewModel.revealFileInFinder(atPath: path) } },
             onRetry: {
                 confirmRetry(
                     label: summary.preset.isDefault ? "summary" : "\(summary.preset.displayName.lowercased()) summary",
@@ -551,7 +548,7 @@ struct LibraryDetailView: View {
     /// `copyConfirmationID` is the exact ID `viewModel.copyConfirmationEntryID`
     /// will briefly hold after `onCopy` fires - used only to flip the icon
     /// to a checkmark for that same brief confirmation window, so both
-    /// sections' copy affordances feel consistent. `onReveal`/`onCopy` are
+    /// sections' copy affordances feel consistent. `onCopy` is
     /// both `nil` until there's a real file/text to act on - no point
     /// showing a button that would do nothing.
     private func transcriptSection<Content: View>(
@@ -562,7 +559,6 @@ struct LibraryDetailView: View {
         copyConfirmationID: String? = nil,
         onCopyPath: (() -> Void)? = nil,
         onShare: (() -> Void)? = nil,
-        onReveal: (() -> Void)? = nil,
         onRetry: (() -> Void)? = nil,
         retryDisabled: Bool = false,
         @ViewBuilder content: () -> Content
@@ -596,9 +592,6 @@ struct LibraryDetailView: View {
                 }
                 if let onShare {
                     iconButton(systemName: "square.and.arrow.up", label: "Share \(title.lowercased())", action: onShare)
-                }
-                if let onReveal {
-                    iconButton(systemName: "square.and.arrow.up", label: "Share \(title.lowercased())", action: onReveal)
                 }
                 if let onRetry {
                     iconButton(systemName: "arrow.clockwise", label: "Retry \(title.lowercased())", action: onRetry)
