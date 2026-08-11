@@ -49,7 +49,12 @@ struct WorklogApp: App {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { recordingController.applicationDidBecomeActive() }
+            if phase == .active {
+                recordingController.applicationDidBecomeActive()
+                // Anything dictated into the Worklog keyboard since we last
+                // looked.
+                KeyboardInbox.drain()
+            }
         }
     }
 }
@@ -86,6 +91,7 @@ final class AppEnvironment {
         SpeechPreviewEngine.shared.activate(recordingController: recordingController)
         dictationController.syncWithSettings()
         ScreenWakeLock.sync()
+        KeyboardInbox.drain()
     }
 
     /// Settings is rebuilt each time it appears so it reflects true current

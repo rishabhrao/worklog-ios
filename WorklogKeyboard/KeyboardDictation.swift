@@ -3,45 +3,72 @@ import Speech
 import SwiftUI
 import UIKit
 
+/// How a dictation spoken into the keyboard reaches the app.
+///
+/// The extension deliberately does not open `worklog.db`. Two processes
+/// writing one SQLite file is a real hazard, and an extension can be killed
+/// mid-write at any moment; a half-written row in the user's only database
+/// would be a bad trade for a convenience. Instead the keyboard drops a small
+/// JSON file into the shared container and the app drains that folder on
+/// launch, inside its own normal write path.
+enum KeyboardBridge {
+    static let appGroup = "group.com.rishabhrao.worklog"
+
+    /// Where handoff files live. Nil when the app group is not provisioned,
+    /// in which case the dictation is still inserted - it just is not saved.
+    static var inboxURL: URL? {
+        guard let container = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroup) else { return nil }
+        let inbox = container.appendingPathComponent("keyboard-inbox", isDirectory: true)
+        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        return inbox
+    }
+
+    /// One dictation, as written by the keyboard and read by the app.
+    struct Handoff: Codable {
+        let id: String
+        let text: String
+        let startedAt: Date
+        let endedAt: Date
+    }
+
+    static func write(text: String, startedAt: Date, endedAt: Date) {
+        guard let inbox = inboxURL else { return }
+        let handoff = Handoff(id: UUID().uuidString, text: text, startedAt: startedAt, endedAt: endedAt)
+        guard let data = try? JSONEncoder().encode(handoff) else { return }
+        try? data.write(to: inbox.appendingPathComponent("\(handoff.id).json"), options: .atomic)
+    }
+}
+
 /// Dictation inside the keyboard extension.
 ///
-/// The app's `DictationController` is not reused here, and that is deliberate.
-/// It borrows the *recording session* - it asks `RecordingController` to power
-/// the mic on, reads out of the rolling segments, and exports a window of
-/// them. An extension has none of that: no capture running, no segment writer,
-/// a hard memory ceiling, and it may be killed the moment the keyboard is
-/// dismissed. So this is the small version: open the mic, recognise
-/// on-device, insert, and - when Full Access allows reaching the shared
-/// container - write the dictation into the same database the app reads.
-///
-/// On-device only. A keyboard sees everything the user types; sending its
-/// audio anywhere would be indefensible, and the app's cloud models stay in
-/// the app.
+/// On-device only, always. A keyboard sees everything the user types; sending
+/// its audio anywhere would be indefensible, so the app's cloud models stay in
+/// the app and this checks `supportsOnDeviceRecognition` before it will run -
+/// without an installed offline model `SFSpeechRecognizer` silently falls back
+/// to Apple's servers, which is exactly what must not happen here.
 @MainActor
 final class KeyboardDictationModel: ObservableObject {
     @Published private(set) var isListening = false
     @Published private(set) var status = ""
     @Published private(set) var isError = false
-    /// The provisional tail, shown while speaking so the user can see it is
-    /// hearing them. Never inserted - only the final text is.
-    @Published private(set) var partial = ""
 
     private let engine = AVAudioEngine()
-    private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    private var heard = ""
     private var startedAt: Date?
 
-    func begin(proxy: UITextDocumentProxy?) {
+    func begin() {
         guard !isListening else { return }
         isError = false
-        partial = ""
+        heard = ""
 
         SFSpeechRecognizer.requestAuthorization { [weak self] auth in
             Task { @MainActor in
                 guard let self else { return }
                 guard auth == .authorized else {
-                    self.fail("Speech recognition permission is off. Turn it on in Settings › Worklog.")
+                    self.fail("Speech recognition is off. Turn it on in Settings › Worklog.")
                     return
                 }
                 AVAudioApplication.requestRecordPermission { granted in
@@ -50,24 +77,22 @@ final class KeyboardDictationModel: ObservableObject {
                             self.fail("Microphone access is off. Turn it on in Settings › Worklog.")
                             return
                         }
-                        self.start(proxy: proxy)
+                        self.start()
                     }
                 }
             }
         }
     }
 
-    private func start(proxy: UITextDocumentProxy?) {
-        let locale = Locale(identifier: WorklogSettingsStore.load().preferredPreviewLocales.first ?? Locale.current.identifier)
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
-            fail("No on-device recognizer for \(locale.identifier).")
+    private func start() {
+        guard let recognizer = SFSpeechRecognizer(locale: Locale.current), recognizer.isAvailable else {
+            fail("No recognizer for \(Locale.current.identifier).")
             return
         }
         guard recognizer.supportsOnDeviceRecognition else {
-            fail("No offline model for \(locale.identifier). Add it under Settings › General › Keyboard › Dictation Languages.")
+            fail("No offline model for \(Locale.current.identifier). Add it under Settings › General › Keyboard › Dictation Languages.")
             return
         }
-        self.recognizer = recognizer
 
         let session = AVAudioSession.sharedInstance()
         do {
@@ -80,7 +105,6 @@ final class KeyboardDictationModel: ObservableObject {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        // Never off-device, for the reason in the type comment.
         request.requiresOnDeviceRecognition = true
         if #available(iOS 16.0, *) { request.addsPunctuation = true }
         self.request = request
@@ -107,18 +131,12 @@ final class KeyboardDictationModel: ObservableObject {
         isListening = true
         status = "Listening…"
 
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+        task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
             Task { @MainActor in
-                guard let self else { return }
-                if let result {
-                    self.partial = result.bestTranscription.formattedString
-                    self.status = self.partial.isEmpty ? "Listening…" : self.partial
-                }
-                if error != nil, self.isListening {
-                    // A task ending mid-hold is routine (its own length
-                    // limit); what was heard so far still stands.
-                    self.finishAudio()
-                }
+                guard let self, self.isListening else { return }
+                guard let result else { return }
+                self.heard = result.bestTranscription.formattedString
+                self.status = self.heard.isEmpty ? "Listening…" : self.heard
             }
         }
     }
@@ -126,39 +144,30 @@ final class KeyboardDictationModel: ObservableObject {
     /// Ends the dictation and inserts what was heard.
     func end(proxy: UITextDocumentProxy?) {
         guard isListening else { return }
-        let text = partial.trimmingCharacters(in: .whitespacesAndNewlines)
-        let began = startedAt
-        finishAudio()
+        let text = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let began = startedAt ?? Date()
+        stopAudio()
 
         guard !text.isEmpty else {
             status = "Nothing heard"
-            clearStatusSoon()
+            clearSoon()
             return
         }
 
-        // A space before, when the field already has a word right behind the
-        // caret - otherwise dictating twice runs the sentences together.
-        if let before = proxy?.documentContextBeforeInput,
-           let last = before.last, !last.isWhitespace {
+        // A separating space when the caret is right behind a word, or two
+        // dictations run into each other.
+        if let before = proxy?.documentContextBeforeInput, let last = before.last, !last.isWhitespace {
             proxy?.insertText(" ")
         }
         proxy?.insertText(text)
-        WorklogHaptics.play(.dictationStop)
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
         status = "Inserted"
-        clearStatusSoon()
+        clearSoon()
 
-        record(text: text, startedAt: began ?? Date())
+        KeyboardBridge.write(text: text, startedAt: began, endedAt: Date())
     }
 
-    /// Throws the dictation away without inserting anything.
-    func cancel() {
-        guard isListening else { return }
-        finishAudio()
-        status = "Discarded"
-        clearStatusSoon()
-    }
-
-    private func finishAudio() {
+    private func stopAudio() {
         isListening = false
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
@@ -169,46 +178,23 @@ final class KeyboardDictationModel: ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    /// Saves the dictation into the same database the app reads, so it shows
-    /// up in the Dictations tab with no syncing step. Needs Full Access to
-    /// reach the shared container; without it the text was still inserted,
-    /// which is the part that mattered.
-    private func record(text: String, startedAt: Date) {
-        guard AppGroup.containerURL != nil else { return }
-        let id = UUID().uuidString
-        let folder = WorklogPaths.dictationFolder(dictationID: id)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let textURL = WorklogPaths.dictationTextURL(dictationID: id)
-        try? text.data(using: .utf8)?.write(to: textURL)
-
-        WorklogDatabase.shared.insertKeyboardDictation(
-            id: id,
-            name: DictationController.defaultDictationName(for: startedAt),
-            startedAt: startedAt,
-            endedAt: Date(),
-            text: text,
-            textPath: textURL.path
-        )
-    }
-
     private func fail(_ message: String) {
         isError = true
         status = message
         isListening = false
     }
 
-    private func clearStatusSoon() {
+    private func clearSoon() {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_600_000_000)
-            partial = ""
             if !isError { status = "" }
         }
     }
 }
 
-/// The keyboard's dictation button - the same press-and-hold shape as the
-/// one in the app, without the hands-free latch. A keyboard is on screen
-/// only while you are holding it anyway.
+/// The keyboard's dictation button - the same press-and-hold shape as the app's,
+/// without the hands-free latch. The keyboard is only on screen while you are
+/// there anyway.
 struct KeyboardDictationButton: View {
     @ObservedObject var model: KeyboardDictationModel
     let proxyProvider: () -> UITextDocumentProxy?
@@ -217,29 +203,29 @@ struct KeyboardDictationButton: View {
 
     var body: some View {
         Circle()
-            .fill(model.isListening ? Color.worklogRecording : Color.worklogAccent)
+            .fill(model.isListening ? KeyboardPalette.recording : KeyboardPalette.accent)
             .frame(width: 72, height: 72)
             .overlay(
                 Image(systemName: "mic.fill")
                     .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(Color.worklogOnAccent)
+                    .foregroundStyle(KeyboardPalette.onAccent)
             )
             .overlay(
                 Circle()
-                    .strokeBorder(Color.worklogRecording.opacity(0.35), lineWidth: 6)
+                    .strokeBorder(KeyboardPalette.recording.opacity(0.35), lineWidth: 6)
                     .scaleEffect(model.isListening ? 1.2 : 1)
                     .opacity(model.isListening ? 1 : 0)
             )
             .scaleEffect(isHolding ? 0.94 : 1)
-            .animation(MotionPrimitives.aware(MotionPrimitives.interactive), value: isHolding)
-            .animation(MotionPrimitives.aware(MotionPrimitives.standard), value: model.isListening)
+            .animation(.spring(response: 0.24, dampingFraction: 0.8), value: isHolding)
+            .animation(.spring(response: 0.32, dampingFraction: 0.86), value: model.isListening)
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in
                         guard !isHolding else { return }
                         isHolding = true
-                        WorklogHaptics.play(.dictationStart)
-                        model.begin(proxy: proxyProvider())
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        model.begin()
                     }
                     .onEnded { _ in
                         isHolding = false

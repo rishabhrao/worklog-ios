@@ -643,6 +643,22 @@ final class WorklogDatabase {
 
     // MARK: - App state (key-value)
 
+    /// A dictation spoken into the Worklog keyboard. No audio and no
+    /// provider: the text was recognised on-device inside the extension and
+    /// inserted there, so it arrives already finished.
+    func insertKeyboardDictation(id: String, name: String, startedAt: Date, endedAt: Date, textPath: String) {
+        try? sqlite.execute(
+            """
+            INSERT OR IGNORE INTO dictations
+                (id, path, default_name, display_name, source_start, source_end, duration_seconds,
+                 created_at, mode, device_uid, state, provider, model, text_path, inserted)
+            VALUES (?, '', ?, ?, ?, ?, ?, ?, 'hold', NULL, 'succeeded', 'apple_on_device', 'keyboard', ?, 1)
+            """,
+            [id, name, name, startedAt.timeIntervalSince1970, endedAt.timeIntervalSince1970,
+             endedAt.timeIntervalSince(startedAt), startedAt.timeIntervalSince1970, textPath]
+        )
+    }
+
     // MARK: - Container-path repair
 
     /// Every non-null value in a path column. Used only by

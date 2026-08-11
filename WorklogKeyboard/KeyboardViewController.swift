@@ -1,3 +1,5 @@
+import AVFoundation
+import Speech
 import SwiftUI
 import UIKit
 
@@ -8,25 +10,32 @@ import UIKit
 /// which is why that one ships an input method too and neither has the Mac's
 /// global hotkey.
 ///
-/// It is deliberately not a general-purpose keyboard. There is one button, it
-/// dictates, and a "next keyboard" globe to get back to the one you actually
-/// type with. Reimplementing QWERTY would be a worse keyboard than the system
-/// one and is not what anybody installs this for.
+/// Deliberately not a general-purpose keyboard: one button that dictates, a
+/// globe to get back to the keyboard you actually type with, and a delete.
+/// Reimplementing QWERTY would be a worse keyboard than the system one and is
+/// not what anybody installs this for.
+///
+/// **This target compiles nothing from the app.** An extension runs under a
+/// hard memory ceiling and can be killed the moment the keyboard is
+/// dismissed, so it carries its own small copies of the few things it needs
+/// rather than pulling in the database layer, the capture engine and the
+/// design system. The duplication is a handful of colours and a date format.
 final class KeyboardViewController: UIInputViewController {
     private var host: UIHostingController<KeyboardRootView>?
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        // The app reads these back to tell the user, accurately, what is set
-        // up - there is no API for either question from the app's side.
-        let defaults = AppGroup.defaults
+        // The app reads these back to tell the user accurately what is set
+        // up - there is no API to ask either question from the app's side.
+        let defaults = UserDefaults(suiteName: KeyboardBridge.appGroup)
         defaults?.set(true, forKey: "keyboard.hasEverLoaded")
         defaults?.set(hasFullAccess, forKey: "keyboard.hasFullAccess")
 
         let root = KeyboardRootView(
             hasFullAccess: hasFullAccess,
             onAdvance: { [weak self] in self?.advanceToNextInputMode() },
+            onDelete: { [weak self] in self?.textDocumentProxy.deleteBackward() },
             proxyProvider: { [weak self] in self?.textDocumentProxy }
         )
         let host = UIHostingController(rootView: root)
@@ -40,71 +49,80 @@ final class KeyboardViewController: UIInputViewController {
             host.view.topAnchor.constraint(equalTo: view.topAnchor),
             host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             // A keyboard has no intrinsic height; without this it collapses.
-            view.heightAnchor.constraint(equalToConstant: 216),
+            view.heightAnchor.constraint(equalToConstant: 232),
         ])
         host.didMove(toParent: self)
         self.host = host
     }
 }
 
-/// The keyboard's one screen.
 struct KeyboardRootView: View {
     let hasFullAccess: Bool
     let onAdvance: () -> Void
+    let onDelete: () -> Void
     let proxyProvider: () -> UITextDocumentProxy?
 
     @StateObject private var model = KeyboardDictationModel()
 
     var body: some View {
-        VStack(spacing: WorklogSpacing.sm) {
-            statusLine
-
-            Button {} label: { EmptyView() }.frame(height: 0).hidden()
+        VStack(spacing: 10) {
+            Text(model.status.isEmpty ? defaultStatus : model.status)
+                .font(.footnote)
+                .foregroundStyle(model.isError ? KeyboardPalette.error : KeyboardPalette.secondaryText)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .frame(height: 36)
+                .animation(.easeOut(duration: 0.2), value: model.status)
 
             KeyboardDictationButton(model: model, proxyProvider: proxyProvider)
 
             HStack {
-                Button(action: onAdvance) {
-                    Image(systemName: "globe")
-                        .font(.system(size: 18, weight: .medium))
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Next keyboard")
-
+                keyButton("globe", label: "Next keyboard", action: onAdvance)
                 Spacer()
-
-                Button {
-                    proxyProvider()?.deleteBackward()
-                } label: {
-                    Image(systemName: "delete.left")
-                        .font(.system(size: 18, weight: .medium))
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Delete")
+                keyButton("delete.left", label: "Delete", action: onDelete)
             }
-            .foregroundStyle(Color.worklogTextSecondary)
-            .padding(.horizontal, WorklogSpacing.md)
+            .padding(.horizontal, 12)
         }
-        .padding(.vertical, WorklogSpacing.sm)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.worklogBackground)
+        .background(KeyboardPalette.background)
     }
 
-    private var statusLine: some View {
-        Text(model.status.isEmpty ? defaultStatus : model.status)
-            .font(WorklogFont.caption)
-            .foregroundStyle(model.isError ? Color.worklogError : Color.worklogTextTertiary)
-            .lineLimit(2)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, WorklogSpacing.lg)
-            .animation(MotionPrimitives.aware(MotionPrimitives.standard), value: model.status)
+    private func keyButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(KeyboardPalette.secondaryText)
+                .frame(width: 48, height: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel(label)
     }
 
     private var defaultStatus: String {
         hasFullAccess
             ? "Hold to talk. Release to insert."
-            : "Hold to talk. Turn on Allow Full Access in Settings to save dictations to Worklog."
+            : "Hold to talk. Turn on Allow Full Access to save dictations to Worklog."
     }
+}
+
+/// The extension's own tokens. The app's design system is not imported here -
+/// see the note on `KeyboardViewController`.
+enum KeyboardPalette {
+    static let background = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(hue: 0.08, saturation: 0.018, brightness: 0.13, alpha: 1)
+        : UIColor(hue: 0.08, saturation: 0.010, brightness: 0.965, alpha: 1) })
+    static let accent = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.361, green: 0.541, blue: 0.639, alpha: 1)
+        : UIColor(red: 0.145, green: 0.365, blue: 0.478, alpha: 1) })
+    static let recording = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(hue: 0.0, saturation: 0.72, brightness: 0.94, alpha: 1)
+        : UIColor(hue: 0.0, saturation: 0.78, brightness: 0.86, alpha: 1) })
+    static let secondaryText = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(white: 0.72, alpha: 1) : UIColor(white: 0.38, alpha: 1) })
+    static let error = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(hue: 0.0, saturation: 0.65, brightness: 0.90, alpha: 1)
+        : UIColor(hue: 0.0, saturation: 0.72, brightness: 0.80, alpha: 1) })
+    static let onAccent = Color.white
 }
