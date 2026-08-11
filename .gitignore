@@ -1,0 +1,22 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Signing / local
+*.mobileprovision
+*.p12
+Local.xcconfig
+
+# macOS
+.DS_Store
+
+# Scratch
+*.log
