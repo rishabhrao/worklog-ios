@@ -8,8 +8,19 @@ extension View {
     /// in a `VStack` puts the status bar *below* the tabs, which reads as a
     /// stray toolbar rather than as part of the app's chrome. Insetting the
     /// content is also what keeps scroll views from running underneath it.
-    func withRecordingStatusBar() -> some View {
-        safeAreaInset(edge: .bottom, spacing: 0) { RecordingStatusBar() }
+    /// `accessory` is drawn directly above the bar - a floating action that
+    /// belongs to one tab. It has to be part of the *same* inset: two nested
+    /// `safeAreaInset`s at different levels of a `NavigationStack` do not
+    /// stack, and the inner one ends up drawn underneath the outer.
+    func withRecordingStatusBar<Accessory: View>(
+        @ViewBuilder accessory: () -> Accessory = { EmptyView() }
+    ) -> some View {
+        safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                accessory()
+                RecordingStatusBar()
+            }
+        }
     }
 }
 

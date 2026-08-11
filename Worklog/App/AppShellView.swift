@@ -14,10 +14,12 @@ struct AppShellView: View {
     @StateObject private var libraryViewModel = LibraryViewModel()
     @StateObject private var dictationsViewModel = DictationsViewModel()
     @StateObject private var settingsViewModel = AppEnvironment.shared.makeSettingsViewModel()
+    @StateObject private var dictationController = AppEnvironment.shared.dictationController
 
     @State private var selection: AppShellRoute = Self.initialRoute
     @State private var libraryPath = NavigationPath()
     @State private var dictationsPath = NavigationPath()
+    @State private var isDictationEnabled = WorklogSettingsStore.load().isDictationEnabled
 
     var body: some View {
         TabView(selection: tabSelection) {
@@ -39,12 +41,19 @@ struct AppShellView: View {
             .tabItem { Label("Library", systemImage: "tray.full") }
 
             NavigationStack(path: $dictationsPath) {
-                DictationsView(viewModel: dictationsViewModel, onOpenEntry: openDictation)
+                DictationsView(viewModel: dictationsViewModel, dictationController: dictationController, onOpenEntry: openDictation)
                     .navigationDestination(for: String.self) { dictationID in
                         DictationDetailScreen(viewModel: dictationsViewModel, dictationID: dictationID)
                     }
             }
-            .withRecordingStatusBar()
+            .withRecordingStatusBar {
+                if isDictationEnabled {
+                    DictationButton(controller: dictationController)
+                        .padding(.vertical, WorklogSpacing.sm)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.worklogBackground)
+                }
+            }
             .tag(AppShellRoute.dictations)
             .tabItem { Label("Dictations", systemImage: "mic") }
 
@@ -71,7 +80,11 @@ struct AppShellView: View {
         // outlive the screens that drive them, so nothing else would: audio
         // started on one page would otherwise keep playing underneath whatever
         // the user opened next.
-        .onChange(of: selection) { _, _ in stopAllPlayback() }
+        .onChange(of: selection) { _, _ in
+            stopAllPlayback()
+            // Settings can turn dictation on or off while the shell is alive.
+            isDictationEnabled = WorklogSettingsStore.load().isDictationEnabled
+        }
         .onChange(of: libraryPath) { _, _ in stopAllPlayback() }
         .onChange(of: dictationsPath) { _, _ in stopAllPlayback() }
     }

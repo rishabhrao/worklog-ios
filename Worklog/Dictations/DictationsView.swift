@@ -6,7 +6,10 @@ import SwiftUI
 /// like one app.
 struct DictationsView: View {
     @ObservedObject var viewModel: DictationsViewModel
+    @ObservedObject var dictationController: DictationController
     let onOpenEntry: (String) -> Void
+
+    @State private var isDictationEnabled = WorklogSettingsStore.load().isDictationEnabled
 
     var body: some View {
         Group {
@@ -19,6 +22,8 @@ struct DictationsView: View {
             }
         }
         .background(Color.worklogBackground)
+        .dictationBubble(dictationController.overlay)
+        .onAppear { isDictationEnabled = WorklogSettingsStore.load().isDictationEnabled }
         .navigationTitle("Dictations")
         .navigationBarTitleDisplayMode(.large)
         .searchable(
@@ -103,7 +108,9 @@ struct DictationsView: View {
         WorklogEmptyState(
             icon: "mic",
             title: "No dictations yet",
-            message: "Hold the mic button on the Clip screen, or use the Worklog keyboard in any app, and what you say lands here."
+            message: isDictationEnabled
+                ? "Hold the mic button below to talk. Slide up to keep going hands-free. Turn on the Worklog keyboard in Settings to dictate straight into other apps."
+                : "Turn on dictation in Settings, then hold the mic button here to talk."
         )
     }
 }
