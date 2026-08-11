@@ -68,8 +68,8 @@ struct LocationTagView: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            Image(systemName: label.isCustom ? "mappin.circle.fill" : "mappin.and.ellipse")
-                .font(.system(size: 9))
+            Image(systemName: "mappin.and.ellipse")
+                .font(.system(size: 11, weight: .medium))
             Text(label.displayName)
                 .lineLimit(1)
         }

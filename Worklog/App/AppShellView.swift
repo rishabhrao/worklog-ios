@@ -47,7 +47,7 @@ struct AppShellView: View {
                     }
             }
             .withRecordingStatusBar {
-                if isDictationEnabled {
+                if isDictationEnabled && dictationsPath.isEmpty {
                     DictationButton(controller: dictationController)
                         .padding(.vertical, WorklogSpacing.sm)
                         .frame(maxWidth: .infinity)

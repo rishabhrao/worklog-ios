@@ -62,7 +62,7 @@ struct ClipWaveformView: View {
                     let barHeight = max(1, CGFloat(peak) * amplitudeScale * midY)
                     path.addRect(CGRect(x: x, y: midY - barHeight, width: max(1, pixelsPerPeak), height: barHeight * 2))
                 }
-                context.fill(path, with: .color(Color.worklogTextTertiary))
+                context.fill(path, with: .color(Color.worklogAccent.opacity(0.85)))
             }
             .drawingGroup()
         } else if peaks == nil {
