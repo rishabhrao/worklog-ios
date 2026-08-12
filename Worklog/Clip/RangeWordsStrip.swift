@@ -76,11 +76,12 @@ struct RangeWordsStrip: View {
     }
 
     /// The strip exists whenever the feature is on - including mid-download,
-    /// when it's about to start being useful - and never when it's off.
+    /// and including while the engine is unwell, since words already
+    /// recorded stay just as readable - and never when it's off.
     private var isEnabled: Bool {
         switch engine.status {
-        case .off, .unavailable: return false
-        case .downloadingModel, .idle, .listening: return true
+        case .off: return false
+        case .unavailable, .downloadingModel, .idle, .listening: return true
         }
     }
 

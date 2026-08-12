@@ -71,6 +71,26 @@ and each rotation re-anchors.
 `.audioTimeRange` gives per-word ranges. Finalized results arrive with
 `isFinal == true` and are split per run into words.
 
+#### Readiness is `installedLocales`, never `AssetInventory.status`
+
+`AssetInventory.status(forModules:)` reads like "are this language's assets
+present". It isn't. It answers "present **and** currently reserved", and
+reservations are a global pool of five shared across apps, which the system
+hands out and takes back on its own.
+
+Gate readiness on it and the app breaks in a way that looks like anything
+but the truth: a device with the model already on it reports `.supported`,
+the app "downloads" it in milliseconds, nothing changes, the re-check says
+`.supported` again, and previews report a failed download until the app is
+relaunched. Verified against the live API: with the locale unreserved and
+status reporting `.supported`, `SpeechAnalyzer.start` and
+`finalizeAndFinishThroughEndOfInput` both succeed.
+
+So readiness is `SpeechTranscriber.installedLocales`, and `AssetInventory`
+is consulted only for a locale that isn't installed. `AssetInventory.reserve`
+is still called while a session runs, as a courtesy so the OS doesn't
+reclaim assets underneath it, and being refused is logged and ignored.
+
 ### `LegacySpeechPreviewTranscriber` - iOS 17 to 25
 
 `SFSpeechRecognizer` with `requiresOnDeviceRecognition = true`. Two things
@@ -92,6 +112,19 @@ over:
 disqualifying. Without an installed offline model this recognizer silently
 falls back to Apple's servers, and sending a day of audio to a server is
 precisely what this feature exists to avoid.
+
+## Nothing latches
+
+Every failure either engine can reach is one that resolves on its own:
+assets reclaimed, a recognizer reporting itself "temporarily unavailable", a
+speech daemon that wasn't up yet. So no failure is terminal. A transition
+that can't reach a working state re-checks itself at 5s, 15s, 60s, then
+every 5 minutes, and both a media-services reset and returning to the
+foreground re-evaluate from scratch - two seconds later, which is what the
+speech asset APIs need to answer for a system that has finished settling.
+
+Without that, one transient answer switched previews off until the app was
+relaunched, while the UI went on saying they were enabled.
 
 ## Storage
 

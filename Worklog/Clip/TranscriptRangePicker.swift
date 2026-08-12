@@ -64,11 +64,20 @@ struct TranscriptRangePicker: View {
 
     var body: some View {
         Group {
-            if !isEnabled {
+            if case .off = engine.status {
                 promptState(
                     icon: "captions.bubble",
                     title: "Speech previews are off",
                     detail: "Turn them on in Settings to see this range as text and clip by words."
+                )
+            } else if case .unavailable(let reason) = engine.status, blocks.isEmpty {
+                // Previews are on but the engine can't run. Saying "off"
+                // here would be a lie the user can't act on - the setting is
+                // plainly on in Settings - so say what's actually wrong.
+                promptState(
+                    icon: "exclamationmark.bubble",
+                    title: "Speech previews aren't running",
+                    detail: reason
                 )
             } else if blocks.isEmpty {
                 promptState(
@@ -164,13 +173,6 @@ struct TranscriptRangePicker: View {
                 .frame(maxWidth: 320)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var isEnabled: Bool {
-        switch engine.status {
-        case .off, .unavailable: return false
-        case .downloadingModel, .idle, .listening: return true
-        }
     }
 
     // MARK: - Selection edits

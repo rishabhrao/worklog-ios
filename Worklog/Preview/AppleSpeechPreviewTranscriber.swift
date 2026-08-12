@@ -38,6 +38,14 @@ final class AppleSpeechPreviewTranscriber: PreviewTranscriber {
     /// `availability()` so Settings can show a percentage.
     private var downloadProgress: Progress?
 
+    /// The locale currently reserved with `AssetInventory`, if any.
+    private var reservedLocale: Locale?
+
+    /// Set by `finish()` so the supervisor's failure backoff can give up
+    /// waiting immediately instead of holding a teardown open for its full
+    /// delay.
+    private var stopRequested = false
+
     // MARK: - Availability / assets
 
     private static func resolveLocale() async -> Locale? {
@@ -69,6 +77,19 @@ final class AppleSpeechPreviewTranscriber: PreviewTranscriber {
         return (supported.sorted(), installed.sorted())
     }
 
+    /// Whether this language's model is physically on the device.
+    ///
+    /// This - not `AssetInventory.status(forModules:)` - is the question
+    /// "can we transcribe right now". See `availability()` for why the
+    /// distinction is the difference between previews that survive being
+    /// backgrounded and previews that don't.
+    private static func isInstalled(_ locale: Locale) async -> Bool {
+        let want = locale.identifier(.bcp47).lowercased()
+        return await SpeechTranscriber.installedLocales.contains {
+            $0.identifier(.bcp47).lowercased() == want
+        }
+    }
+
     /// Fetches one language's assets on demand, for the Settings list.
     static func downloadLanguage(_ identifier: String) async throws {
         guard let locale = await SpeechTranscriber.supportedLocale(
@@ -94,6 +115,23 @@ final class AppleSpeechPreviewTranscriber: PreviewTranscriber {
         guard let locale = await Self.resolveLocale() else {
             return .unavailable("No supported preview language for this system.")
         }
+        // Installed on device means ready, full stop.
+        //
+        // `AssetInventory.status(forModules:)` answers a different question
+        // than it appears to: not "are this language's assets present" but
+        // "are they present *and* is the locale currently reserved". Those
+        // reservations are a small global pool - five, shared across every
+        // app - and the system takes them back on its own. So a device with
+        // the model sitting right there reports `.supported`, the app
+        // dutifully "downloads" it in milliseconds, nothing changes, and the
+        // re-check says `.supported` again, leaving previews parked on a
+        // failed-download message until the app is relaunched.
+        //
+        // Verified against the live API: with the locale unreserved and
+        // status reporting `.supported`, both `SpeechAnalyzer.start` and
+        // `finalizeAndFinishThroughEndOfInput` succeed. The reservation is a
+        // courtesy to the OS (see `reserveIfNeeded`), never a prerequisite.
+        if await Self.isInstalled(locale) { return .ready }
         let transcriber = SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
@@ -132,6 +170,54 @@ final class AppleSpeechPreviewTranscriber: PreviewTranscriber {
         previewLog.info("speech model assets installed")
     }
 
+    /// Tells the OS this app is using `locale`, so its assets aren't
+    /// reclaimed while previews run.
+    ///
+    /// Best effort by design. The reservation pool is global and holds five
+    /// locales, so it can legitimately be full, and being refused costs us
+    /// nothing: transcription works unreserved. We hold at most one and give
+    /// it back when previews stop.
+    private func reserveIfNeeded(_ locale: Locale) async {
+        if currentReservation() == locale { return }
+        await releaseReservation()
+        do {
+            try await AssetInventory.reserve(locale: locale)
+            setReservation(locale)
+        } catch {
+            previewLog.info("no asset reservation for \(locale.identifier, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func releaseReservation() async {
+        guard let locale = currentReservation() else { return }
+        setReservation(nil)
+        await AssetInventory.release(reservedLocale: locale)
+    }
+
+    private func currentReservation() -> Locale? {
+        lock.lock()
+        defer { lock.unlock() }
+        return reservedLocale
+    }
+
+    private func setReservation(_ locale: Locale?) {
+        lock.lock()
+        reservedLocale = locale
+        lock.unlock()
+    }
+
+    private func setStopRequested(_ requested: Bool) {
+        lock.lock()
+        stopRequested = requested
+        lock.unlock()
+    }
+
+    private func isStopRequested() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopRequested
+    }
+
     private func setDownloadProgress(_ progress: Progress?) {
         lock.lock()
         downloadProgress = progress
@@ -153,6 +239,7 @@ final class AppleSpeechPreviewTranscriber: PreviewTranscriber {
             return
         }
         self.onEvent = onEvent
+        stopRequested = false
         let (stream, continuation) = AsyncStream.makeStream(of: Feed.self)
         feedContinuation = continuation
         let task = Task.detached(priority: .utility) { [weak self] in
@@ -171,12 +258,16 @@ final class AppleSpeechPreviewTranscriber: PreviewTranscriber {
     }
 
     func finish() async {
+        setStopRequested(true)
         let (continuation, task) = takeFeed()
         // Ending the feed stream is what lets the supervisor finalize the
         // analyzer and flush tail words - then wait for it so callers know
-        // every word is in the database when this returns.
+        // every word is in the database when this returns. The stop flag
+        // above keeps that wait short when the supervisor is parked in its
+        // failure backoff, which has nothing to flush anyway.
         continuation?.finish()
         await task?.value
+        await releaseReservation()
         clearEventHandler()
     }
 
@@ -269,7 +360,14 @@ final class AppleSpeechPreviewTranscriber: PreviewTranscriber {
                 // meanwhile; it is deliberately drained and dropped by the
                 // sleep - previews of the past are not worth a backlog.
                 let delay: TimeInterval = [2, 10][min(consecutiveFailures - 1, 1)] + (consecutiveFailures >= 3 ? 30 : 0)
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                // Slept in slices so `finish()` isn't held open for the full
+                // backoff - stopping previews has to be prompt even when the
+                // engine underneath is unwell.
+                let deadline = Date().addingTimeInterval(delay)
+                while Date() < deadline, !isStopRequested() {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                if isStopRequested() { return }
                 while let next = await iterator.next() {
                     // Drop the backlog; keep the newest as the next
                     // session's first buffer. A bounded peek: stop draining
@@ -288,6 +386,7 @@ final class AppleSpeechPreviewTranscriber: PreviewTranscriber {
         guard let locale = await Self.resolveLocale() else {
             return .failed(PreviewEngineError.noSupportedLocale)
         }
+        await reserveIfNeeded(locale)
 
         let transcriber = SpeechTranscriber(
             locale: locale,

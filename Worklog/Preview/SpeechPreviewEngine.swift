@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import UIKit
 
 /// Where the speech-preview feature currently stands - one value that
 /// Settings renders directly.
@@ -54,6 +55,23 @@ final class SpeechPreviewEngine: ObservableObject {
     /// sequence can't interleave two transitions.
     private var transitionTask: Task<Void, Never>?
 
+    /// A re-check queued after a transition that couldn't reach a working
+    /// state.
+    ///
+    /// Previews must never stay broken until the app is relaunched. Every
+    /// failure below this line is something that comes back on its own: a
+    /// language whose assets were reclaimed, a speech daemon that wasn't up
+    /// yet, the unsettled moments after a media-services reset. Left alone,
+    /// a single bad answer used to stick forever, because the only things
+    /// that ever re-ran a transition were the recording state changing and
+    /// the Settings toggle - so the app looked fine, said previews were on,
+    /// and quietly recorded nothing but audio.
+    private var recheckTask: Task<Void, Never>?
+    private var recheckAttempt = 0
+    /// Quick twice, then back off - a reset settles in seconds, a missing
+    /// model may take a while.
+    private static let recheckDelays: [TimeInterval] = [5, 15, 60, 300]
+
     private static let recentWordsLimit = 80
 
     private init() {}
@@ -81,13 +99,37 @@ final class SpeechPreviewEngine: ObservableObject {
     /// Wires the engine to the app. Called once at launch, after the
     /// recording controller exists.
     func activate(recordingController: RecordingController) {
+        guard self.recordingController == nil else { return }
         self.recordingController = recordingController
         transcriber = Self.makeTranscriber()
         recordingController.$state
             .removeDuplicates()
             .sink { [weak self] _ in self?.evaluate() }
             .store(in: &cancellables)
+        observeSystemRecovery()
         evaluate()
+    }
+
+    /// The two moments where the ground moves under a running transcriber.
+    ///
+    /// A media-services reset tears down every audio object the app owns and
+    /// takes the speech stack with it; coming back to the foreground is
+    /// where anything concluded while suspended deserves a fresh look. The
+    /// delay is for the OS: asked the instant a notification lands, the
+    /// speech asset APIs answer for a system that hasn't finished settling.
+    private func observeSystemRecovery() {
+        let center = NotificationCenter.default
+        for name in [
+            AVAudioSession.mediaServicesWereResetNotification,
+            UIApplication.didBecomeActiveNotification,
+        ] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    self?.evaluate()
+                }
+            }
+        }
     }
 
     /// Same pattern as `WorklogHaptics`/`DictationSounds`: Settings calls
@@ -120,6 +162,7 @@ final class SpeechPreviewEngine: ObservableObject {
         let settings = WorklogSettingsStore.load()
         guard settings.isSpeechPreviewsEnabled else {
             await stopListeningIfNeeded()
+            cancelRecheck()
             status = .off
             return
         }
@@ -127,6 +170,7 @@ final class SpeechPreviewEngine: ObservableObject {
         guard let transcriber else {
             await stopListeningIfNeeded()
             status = .unavailable("On-device speech recognition isn't available on this device.")
+            scheduleRecheck()
             return
         }
 
@@ -136,6 +180,7 @@ final class SpeechPreviewEngine: ObservableObject {
         case .unavailable(let reason):
             await stopListeningIfNeeded()
             status = .unavailable(reason)
+            scheduleRecheck()
             return
         case .needsDownload, .downloading:
             await stopListeningIfNeeded()
@@ -144,8 +189,9 @@ final class SpeechPreviewEngine: ObservableObject {
             // a fresh availability read below.
             guard case .ready = await transcriber.availability() else {
                 if case .downloadingModel = status {
-                    status = .unavailable("The speech model download didn't finish. Toggle previews off and on to retry.")
+                    status = .unavailable("The speech model didn't finish downloading. Trying again shortly.")
                 }
+                scheduleRecheck()
                 return
             }
         case .ready:
@@ -153,6 +199,7 @@ final class SpeechPreviewEngine: ObservableObject {
         }
 
         // Ready. Listen exactly while recording runs.
+        cancelRecheck()
         if recordingController?.state == .recording {
             startListeningIfNeeded(with: transcriber)
             status = .listening
@@ -162,6 +209,24 @@ final class SpeechPreviewEngine: ObservableObject {
         }
 
         prune(with: settings)
+    }
+
+    private func scheduleRecheck() {
+        recheckTask?.cancel()
+        let delay = Self.recheckDelays[min(recheckAttempt, Self.recheckDelays.count - 1)]
+        recheckAttempt += 1
+        previewLog.info("previews not ready; re-checking in \(Int(delay), privacy: .public)s")
+        recheckTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.evaluate()
+        }
+    }
+
+    private func cancelRecheck() {
+        recheckTask?.cancel()
+        recheckTask = nil
+        recheckAttempt = 0
     }
 
     private func downloadAssets(with transcriber: PreviewTranscriber) async {
