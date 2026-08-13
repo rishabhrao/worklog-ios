@@ -300,6 +300,9 @@ private struct TranscriptBlockView: View {
     /// `nil` between gestures.
     @State private var dragAnchorIndex: Int?
     @State private var dragLastIndex: Int?
+    /// Whether the current drag has been judged a sideways paint or a
+    /// vertical scroll. Nil until it has moved far enough to tell.
+    @State private var dragIsPainting: Bool?
 
     var body: some View {
         VStack(alignment: .leading, spacing: WorklogSpacing.xs) {
@@ -326,7 +329,14 @@ private struct TranscriptBlockView: View {
                 GeometryReader { proxy in
                     Color.clear
                         .contentShape(Rectangle())
-                        .gesture(selectionGesture(anchors: anchors, proxy: proxy))
+                        // Simultaneous, not exclusive. `.gesture` with a
+                        // zero-distance DragGesture wins the moment a finger
+                        // lands, which leaves the enclosing ScrollView unable
+                        // to scroll at all - the same way an all-directions
+                        // drag handler broke scrolling in the Android build.
+                        // Running alongside the scroll and deciding by
+                        // direction (below) keeps both gestures available.
+                        .simultaneousGesture(selectionGesture(anchors: anchors, proxy: proxy))
                 }
             }
         }
@@ -340,6 +350,18 @@ private struct TranscriptBlockView: View {
     private func selectionGesture(anchors: [Int: Anchor<CGRect>], proxy: GeometryProxy) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
+                // Decide once per drag, as soon as it has moved far enough to
+                // have a direction: sideways is a paint, up or down belongs to
+                // the scroll view. A tap - which never travels - stays
+                // undecided and is handled in `onEnded`.
+                if dragIsPainting == nil {
+                    let dx = abs(value.translation.width)
+                    let dy = abs(value.translation.height)
+                    if max(dx, dy) > Self.directionSlop {
+                        dragIsPainting = dx > dy
+                    }
+                }
+                guard dragIsPainting != false else { return }
                 guard let index = wordIndex(at: value.location, anchors: anchors, proxy: proxy) else { return }
                 if dragAnchorIndex == nil {
                     dragAnchorIndex = index
@@ -356,16 +378,23 @@ private struct TranscriptBlockView: View {
                 }
             }
             .onEnded { _ in
+                let wasScrolling = dragIsPainting == false
                 defer {
                     dragAnchorIndex = nil
                     dragLastIndex = nil
+                    dragIsPainting = nil
                 }
+                guard !wasScrolling else { return }
                 guard let anchor = dragAnchorIndex, let last = dragLastIndex else { return }
                 if anchor == last {
                     onTapWord(block.words[anchor])
                 }
             }
     }
+
+    /// How far a drag travels before its direction is taken as meant. Below
+    /// this it is still a tap.
+    private static let directionSlop: CGFloat = 8
 
     /// The word under the point - or, in the leading between lines, the
     /// nearest one, so a drag doesn't stutter as it crosses line breaks.
